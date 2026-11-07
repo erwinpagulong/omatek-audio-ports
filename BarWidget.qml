@@ -95,7 +95,9 @@ BarWidget {
     chainTimer.stop()
     if (root.refreshPending) {
       root.refreshPending = false
-      root.refresh()
+      // Deferred: the process still reports running while it signals the end
+      // of its stream, so calling refresh() here would bounce off the guard.
+      Qt.callLater(root.refresh)
     }
   }
 
@@ -156,11 +158,12 @@ BarWidget {
     stdout: StdioCollector {
       id: defaultSinkOut
       waitForEnd: true
+      // Read the collector at stream end, the way the shell's own processes
+      // do: the text is complete here even though the process still reports
+      // running while it signals exit.
+      onStreamFinished: root.defaultSink = String(text || "").trim()
     }
-    onExited: {
-      root.defaultSink = String(defaultSinkOut.text || "").trim()
-      listSinksProc.running = true
-    }
+    onExited: listSinksProc.running = true
   }
 
   Process {
@@ -169,18 +172,18 @@ BarWidget {
     stdout: StdioCollector {
       id: listSinksOut
       waitForEnd: true
-    }
-    onExited: {
-      root.sinkListJson = String(listSinksOut.text || "")
-      var sink = Model.parseSink(root.sinkListJson, root.defaultSink)
-      if (sink && sink.ports.length > 0) {
-        root.applySink(sink)
-        root.finishRefresh()
-      } else if (root.defaultSink !== "") {
-        resolverProc.running = true
-      } else {
-        root.clearSink()
-        root.finishRefresh()
+      onStreamFinished: {
+        root.sinkListJson = String(text || "")
+        var sink = Model.parseSink(root.sinkListJson, root.defaultSink)
+        if (sink && sink.ports.length > 0) {
+          root.applySink(sink)
+          root.finishRefresh()
+        } else if (root.defaultSink !== "") {
+          resolverProc.running = true
+        } else {
+          root.clearSink()
+          root.finishRefresh()
+        }
       }
     }
   }
@@ -195,13 +198,13 @@ BarWidget {
     stdout: StdioCollector {
       id: resolverOut
       waitForEnd: true
-    }
-    onExited: {
-      var resolved = String(resolverOut.text || "").trim()
-      var sink = resolved !== "" ? Model.parseSink(root.sinkListJson, resolved) : null
-      if (sink) root.applySink(sink)
-      else root.applySink(Model.parseSink(root.sinkListJson, root.defaultSink))
-      root.finishRefresh()
+      onStreamFinished: {
+        var resolved = String(text || "").trim()
+        var sink = resolved !== "" ? Model.parseSink(root.sinkListJson, resolved) : null
+        if (sink) root.applySink(sink)
+        else root.applySink(Model.parseSink(root.sinkListJson, root.defaultSink))
+        root.finishRefresh()
+      }
     }
   }
 
