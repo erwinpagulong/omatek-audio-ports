@@ -1,0 +1,8 @@
+{
+  "ports.title": "Output ports",
+  "ports.single": "This output offers only one port.",
+  "ports.none": "This output offers no ports to switch.",
+  "ports.unavailable": "not plugged in",
+  "ports.current": "Current port",
+  "ports.cycle": "Switch to the next port"
+}
