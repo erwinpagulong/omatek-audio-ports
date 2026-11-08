@@ -38,8 +38,8 @@ Ports reported as `not available` (no cable in the jack) are dimmed, labelled
 | `omarchy-audio-output-sink` | read-only fallback when the default sink is a virtual/DSP sink with no ports |
 | `~/.config/omarchy/audio-output-port` | best-effort one-line record of the chosen port |
 
-No shell scripts, no `sudo`, no install hooks, no second Quickshell process, and
-nothing under `/usr/share/omarchy/` is modified.
+No shell scripts, no root access, no install hooks, no second Quickshell
+process, and nothing under `/usr/share/omarchy/` is modified.
 
 ## Supported environments
 
