@@ -29,6 +29,7 @@ Ui.Panel {
   readonly property var barIdentity: hostWidget || root
   readonly property var ports: hostWidget ? hostWidget.ports : []
   readonly property string activePortName: hostWidget ? String(hostWidget.activePort || "") : ""
+  readonly property string headerText: hostWidget ? String(hostWidget.headerText || "") : ""
   // The cursor is always resolved against the current list, so a sink switch
   // that shrinks the ports mid-open can never index past the end.
   readonly property int safeCursor: Model.clampIndex(root.cursorIndex, root.ports.length)
@@ -125,8 +126,8 @@ Ui.Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          visible: root.hostWidget ? String(root.hostWidget.sinkDescription || "") !== "" : false
-          text: root.hostWidget ? String(root.hostWidget.sinkDescription || "") : ""
+          visible: root.headerText !== ""
+          text: root.headerText
           color: Qt.darker(root.barForeground, 1.4)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption

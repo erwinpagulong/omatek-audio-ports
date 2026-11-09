@@ -31,6 +31,16 @@ BarWidget {
   // changes; only "pactl returned nothing" hides the widget entirely.
   property bool ready: false
 
+  // Display-audio state. A GPU sink exposes one port per card profile, so the
+  // card supplies the other live connectors and monitors supplies their cable
+  // labels. All three stay empty for analog/USB sinks.
+  property string cardName: ""
+  property string deviceDescription: ""
+  property string activeProfile: ""
+  property var parsedSink: null
+  property var parsedCard: null
+  property bool displayApplyPending: false
+
   property bool refreshPending: false
   property string sinkListJson: ""
 
@@ -49,10 +59,21 @@ BarWidget {
   // name inside Model.portLabel, so this never renders a bare dash.
   readonly property string tooltip: {
     var label = Model.portLabel(root.activePortObject)
-    var sink = root.sinkDescription || root.sinkName
+    var sink = (root.activeProfile !== "" ? root.deviceDescription : root.sinkDescription) || root.sinkName
     if (sink === "") return label
     if (label === "") return sink
     return sink + " — " + label
+  }
+
+  // For a display sink the raw description says "(HDMI)" even on a
+  // DisplayPort cable because the audio transport is HDMI-protocol, so name
+  // the active cable and monitor instead.
+  readonly property string headerText: {
+    if (root.activeProfile !== "" && root.deviceDescription !== "") {
+      var label = Model.portLabel(root.activePortObject)
+      return label === "" ? root.deviceDescription : root.deviceDescription + " — " + label
+    }
+    return root.sinkDescription
   }
 
   readonly property string preferenceFile:
@@ -82,7 +103,8 @@ BarWidget {
   // ---- pactl: default sink -> its port list -> optional resolver ----------
 
   function refresh() {
-    if (defaultSinkProc.running || listSinksProc.running || resolverProc.running) {
+    if (defaultSinkProc.running || listSinksProc.running || listCardsProc.running
+        || monitorsProc.running || resolverProc.running) {
       root.refreshPending = true
       return
     }
@@ -101,22 +123,63 @@ BarWidget {
     }
   }
 
-  function applySink(sink) {
+  function applySink(sink, portsOverride) {
     if (!sink) {
       root.clearSink()
       return
     }
     root.sinkName = sink.name || root.defaultSink
     root.sinkDescription = sink.description || sink.name || ""
+    root.cardName = sink.cardName || ""
+    root.deviceDescription = sink.deviceDescription || ""
     root.activePort = sink.activePort || ""
-    root.ports = sink.ports || []
+    root.ports = portsOverride || sink.ports || []
+    // Set again by the display path after the merge; clearing it here keeps an
+    // analog sink from inheriting a stale display profile.
+    root.activeProfile = ""
     root.ready = true
+  }
+
+  // A display sink needs one more read (its card) and one more (the monitors)
+  // before it can be applied. Everything else is applied right away.
+  function presentSink(sink) {
+    if (!sink) {
+      root.clearSink()
+      root.finishRefresh()
+      return
+    }
+    root.parsedSink = sink
+    if (Model.hasDisplayPorts(sink) && sink.cardName !== "") {
+      root.displayApplyPending = false
+      listCardsProc.running = true
+      return
+    }
+    root.parsedCard = null
+    root.applySink(sink)
+    root.finishRefresh()
+  }
+
+  function finishDisplayApply(monitorJson) {
+    if (!root.displayApplyPending || !root.parsedSink || !root.parsedCard) return
+    root.displayApplyPending = false
+    var monitors = Model.parseMonitors(monitorJson)
+    var labels = Model.labelDisplayPorts(root.parsedCard.ports, monitors)
+    var merged = Model.mergeDisplayPorts(root.parsedSink, root.parsedCard, labels)
+    root.applySink(root.parsedSink, merged)
+    root.activeProfile = root.parsedCard.activeProfile
+    root.finishRefresh()
   }
 
   // No sink to show: render nothing and take no width.
   function clearSink() {
     root.sinkName = ""
     root.sinkDescription = ""
+    root.cardName = ""
+    root.deviceDescription = ""
+    root.activeProfile = ""
+    root.parsedSink = null
+    root.parsedCard = null
+    root.displayApplyPending = false
     root.activePort = ""
     root.ports = []
     root.ready = false
@@ -176,16 +239,50 @@ BarWidget {
         root.sinkListJson = String(text || "")
         var sink = Model.parseSink(root.sinkListJson, root.defaultSink)
         if (sink && sink.ports.length > 0) {
-          root.applySink(sink)
-          root.finishRefresh()
+          root.presentSink(sink)
         } else if (root.defaultSink !== "") {
           resolverProc.running = true
         } else {
-          root.clearSink()
-          root.finishRefresh()
+          root.presentSink(null)
         }
       }
     }
+  }
+
+  // The active profile only creates a sink for its own port, so the card is
+  // the only place the other display connectors are visible. Read-only.
+  Process {
+    id: listCardsProc
+    command: ["pactl", "-f", "json", "list", "cards"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var card = Model.parseCard(String(text || ""), root.parsedSink ? root.parsedSink.cardName : "")
+        if (!card) {
+          root.parsedCard = null
+          root.applySink(root.parsedSink)
+          root.finishRefresh()
+          return
+        }
+        root.parsedCard = card
+        root.displayApplyPending = true
+        monitorsProc.running = true
+      }
+    }
+  }
+
+  // hyprctl gives the connector type and model of each active display, which
+  // is how a card port becomes "DisplayPort · VG271U M3". If it cannot run,
+  // finishDisplayApply still applies the card descriptions.
+  Process {
+    id: monitorsProc
+    command: ["hyprctl", "monitors", "-j"]
+    stdout: StdioCollector {
+      id: monitorsOut
+      waitForEnd: true
+      onStreamFinished: root.finishDisplayApply(String(text || ""))
+    }
+    onExited: root.finishDisplayApply(String(monitorsOut.text || ""))
   }
 
   // Read-only fallback that names the physical output under a virtual DSP
@@ -201,9 +298,7 @@ BarWidget {
       onStreamFinished: {
         var resolved = String(text || "").trim()
         var sink = resolved !== "" ? Model.parseSink(root.sinkListJson, resolved) : null
-        if (sink) root.applySink(sink)
-        else root.applySink(Model.parseSink(root.sinkListJson, root.defaultSink))
-        root.finishRefresh()
+        root.presentSink(sink || Model.parseSink(root.sinkListJson, root.defaultSink))
       }
     }
   }
@@ -242,7 +337,8 @@ BarWidget {
     id: chainTimer
     interval: 3000
     onTriggered: {
-      if (defaultSinkProc.running || listSinksProc.running || resolverProc.running) return
+      if (defaultSinkProc.running || listSinksProc.running || listCardsProc.running
+          || monitorsProc.running || resolverProc.running) return
       root.finishRefresh()
     }
   }
