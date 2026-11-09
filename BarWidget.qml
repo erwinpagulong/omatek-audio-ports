@@ -40,6 +40,10 @@ BarWidget {
   property var parsedSink: null
   property var parsedCard: null
   property bool displayApplyPending: false
+  // Set when a selection switches the card profile; the next sink read finds
+  // the sink the switch created and makes it the default.
+  property string pendingCard: ""
+  property string pendingDefaultPort: ""
 
   property bool refreshPending: false
   property string sinkListJson: ""
@@ -187,7 +191,22 @@ BarWidget {
 
   function selectPort(portName) {
     if (root.sinkName === "" || !portName) return
-    Quickshell.execDetached(["pactl", "set-sink-port", root.sinkName, String(portName)])
+    var list = root.ports || []
+    var port = null
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].name || "") === String(portName)) { port = list[i]; break }
+    }
+    var profile = port ? String(port.profile || "") : ""
+    if (profile !== "" && profile !== root.activeProfile && root.cardName !== "") {
+      // A port on another profile only exists after the card switches to it;
+      // the resulting sink is made default on the next read.
+      root.pendingCard = root.cardName
+      root.pendingDefaultPort = String(portName)
+      pendingTimer.restart()
+      Quickshell.execDetached(["pactl", "set-card-profile", root.cardName, profile])
+    } else {
+      Quickshell.execDetached(["pactl", "set-sink-port", root.sinkName, String(portName)])
+    }
     // Best effort persistence, inert on machines that do not read it. A
     // heredoc-free printf keeps the port name exactly as pactl knows it.
     Quickshell.execDetached(["sh", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", String(portName), root.preferenceFile])
@@ -237,6 +256,16 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: {
         root.sinkListJson = String(text || "")
+        if (root.pendingDefaultPort !== "") {
+          var target = Model.findSinkByPort(root.sinkListJson, root.pendingCard, root.pendingDefaultPort)
+          if (target !== "") {
+            if (target !== root.defaultSink) Quickshell.execDetached(["pactl", "set-default-sink", target])
+            root.defaultSink = target
+            root.pendingCard = ""
+            root.pendingDefaultPort = ""
+            pendingTimer.stop()
+          }
+        }
         var sink = Model.parseSink(root.sinkListJson, root.defaultSink)
         if (sink && sink.ports.length > 0) {
           root.presentSink(sink)
@@ -323,6 +352,18 @@ BarWidget {
     id: debounce
     interval: 120
     onTriggered: root.refresh()
+  }
+
+  // A profile that refuses to switch, or a sink that never appears, must not
+  // leave the widget waiting for a default forever.
+  Timer {
+    id: pendingTimer
+    interval: 5000
+    onTriggered: {
+      root.pendingCard = ""
+      root.pendingDefaultPort = ""
+      root.displayApplyPending = false
+    }
   }
 
   Timer {
