@@ -232,6 +232,81 @@ function labelDisplayPorts(cardPorts, monitors) {
   return labels
 }
 
+// A display sink only shows the port of its active profile, so the card's
+// other available connectors are merged in here. Non-display sinks (analog,
+// USB) and sinks whose card cannot be matched come back exactly as they were.
+function mergeDisplayPorts(sink, card, labels) {
+  var sinkPorts = sink && sink.ports ? sink.ports : []
+  if (!sink || !card) return sinkPorts
+  if (String(card.name || "") !== String(sink.cardName || "")) return sinkPorts
+  if (!hasDisplayPorts(sink)) return sinkPorts
+
+  var byName = {}
+  for (var i = 0; i < sinkPorts.length; i++) byName[sinkPorts[i].name] = sinkPorts[i]
+
+  var merged = []
+  var seen = {}
+  var active = String(sink.activePort || "")
+  var cardPorts = card.ports && card.ports.length ? card.ports : []
+  for (var p = 0; p < cardPorts.length; p++) {
+    var port = cardPorts[p]
+    if (!isDisplayPort(port)) continue
+    // Only live outputs are offered; the sink's own active port stays even if
+    // the card marks it unavailable for a moment, so the current row cannot
+    // vanish from under the cursor during a hotplug.
+    if (!isAvailable(port) && port.name !== active) continue
+    if (seen[port.name]) continue
+    seen[port.name] = true
+
+    var live = byName[port.name]
+    merged.push({
+      name: port.name,
+      description: String((live && live.description) || port.description || ""),
+      type: port.type,
+      priority: typeof port.priority === "number" ? port.priority : 0,
+      availability: String(port.availability || ""),
+      profile: chooseProfile(port, card, card.activeProfile),
+      label: String(labels && labels[port.name] ? labels[port.name] : "")
+    })
+  }
+
+  for (var s = 0; s < sinkPorts.length; s++) {
+    if (!seen[sinkPorts[s].name]) {
+      seen[sinkPorts[s].name] = true
+      merged.push(sinkPorts[s])
+    }
+  }
+  return merged
+}
+
+// The sink the profile switch just created: the one on the same card whose
+// active port is the one the user picked. Used once per switch to make it the
+// default without guessing PipeWire's node naming.
+function findSinkByPort(jsonText, cardName, portName) {
+  var text = String(jsonText || "").trim()
+  if (!text) return ""
+
+  var sinks
+  try {
+    sinks = JSON.parse(text)
+  } catch (error) {
+    return ""
+  }
+  if (!sinks || !sinks.length) return ""
+
+  var wantedPort = String(portName || "")
+  var wantedCard = String(cardName || "")
+  for (var i = 0; i < sinks.length; i++) {
+    var sink = sinks[i]
+    if (!sink) continue
+    if (String(sink.active_port || "") !== wantedPort) continue
+    var props = sink.properties || {}
+    if (String(props["device.name"] || "") !== wantedCard) continue
+    return String(sink.name || "")
+  }
+  return ""
+}
+
 // pactl reports "not available" for a port with no cable in it. Everything
 // else (including a missing field) is switchable.
 function isAvailable(port) {
@@ -243,7 +318,7 @@ function isAvailable(port) {
 // is the fallback so a row never renders blank.
 function portLabel(port) {
   if (!port) return ""
-  return String(port.description || port.name || "")
+  return String(port.label || port.description || port.name || "")
 }
 
 function glyphForText(text) {
@@ -313,6 +388,8 @@ if (typeof module !== "undefined") {
     parseMonitors: parseMonitors,
     cableForConnector: cableForConnector,
     labelDisplayPorts: labelDisplayPorts,
+    mergeDisplayPorts: mergeDisplayPorts,
+    findSinkByPort: findSinkByPort,
     isAvailable: isAvailable,
     portLabel: portLabel,
     glyphFor: glyphFor,
