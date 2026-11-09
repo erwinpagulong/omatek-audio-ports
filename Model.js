@@ -156,6 +156,82 @@ function chooseProfile(port, card, activeProfile) {
   return candidates.length ? candidates[0] : ""
 }
 
+// hyprctl monitors -j -> the connector and model of each active display.
+// Omarchy always has Hyprland; when it is unavailable the list is empty and
+// display rows fall back to the card's own description.
+function parseMonitors(jsonText) {
+  var text = String(jsonText || "").trim()
+  if (!text) return []
+
+  var monitors
+  try {
+    monitors = JSON.parse(text)
+  } catch (error) {
+    return []
+  }
+  if (!monitors || !monitors.length) return []
+
+  var result = []
+  for (var i = 0; i < monitors.length; i++) {
+    var monitor = monitors[i]
+    if (!monitor) continue
+    result.push({
+      connector: String(monitor.name || ""),
+      model: String(monitor.model || "")
+    })
+  }
+  return result
+}
+
+function cableForConnector(connector) {
+  var value = String(connector || "")
+  if (/^DP([-_]|$)/i.test(value)) return "DisplayPort"
+  if (/^HDMI/i.test(value)) return "HDMI"
+  if (/^DVI/i.test(value)) return "DVI"
+  if (/^USB[-_]?C/i.test(value)) return "USB-C"
+  return ""
+}
+
+function normalizeModel(value) {
+  return String(value || "").trim().toLowerCase()
+}
+
+// Card port product name (from the connector's ELD) matched against the
+// Hyprland monitor model gives the cable type. Each monitor is used once, so
+// two identical monitors cannot both claim the same row: the unmatched one
+// falls back to the card description instead of showing a wrong cable.
+function labelDisplayPorts(cardPorts, monitors) {
+  var labels = {}
+  var list = cardPorts && cardPorts.length ? cardPorts : []
+  var displays = monitors && monitors.length ? monitors : []
+  var used = []
+
+  for (var i = 0; i < list.length; i++) {
+    var port = list[i]
+    if (!isDisplayPort(port)) continue
+
+    var product = normalizeModel(port.productName)
+    var match = null
+    if (product !== "") {
+      for (var m = 0; m < displays.length; m++) {
+        if (used[m]) continue
+        if (normalizeModel(displays[m].model) !== product) continue
+        used[m] = true
+        match = displays[m]
+        break
+      }
+    }
+
+    if (match) {
+      var cable = cableForConnector(match.connector)
+      labels[port.name] = cable === "" ? match.model : cable + " · " + match.model
+    } else {
+      labels[port.name] = String(port.description || port.name || "")
+    }
+  }
+  return labels
+}
+
 // pactl reports "not available" for a port with no cable in it. Everything
 // else (including a missing field) is switchable.
 function isAvailable(port) {
@@ -234,6 +310,9 @@ if (typeof module !== "undefined") {
     hasDisplayPorts: hasDisplayPorts,
     parseCard: parseCard,
     chooseProfile: chooseProfile,
+    parseMonitors: parseMonitors,
+    cableForConnector: cableForConnector,
+    labelDisplayPorts: labelDisplayPorts,
     isAvailable: isAvailable,
     portLabel: portLabel,
     glyphFor: glyphFor,

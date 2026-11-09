@@ -167,3 +167,45 @@ test("chooseProfile keeps the active profile when the port offers it", () => {
   const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
   assert.equal(Model.chooseProfile(card.ports[0], card, "output:hdmi-stereo"), "output:hdmi-stereo")
 })
+
+const MONITORS = JSON.stringify([
+  { id: 0, name: "DP-1", model: "VG271U M3" },
+  { id: 1, name: "HDMI-A-1", model: "VG240Y S" }
+])
+
+test("parseMonitors keeps connector and model, tolerating junk", () => {
+  assert.deepEqual(Model.parseMonitors(MONITORS), [
+    { connector: "DP-1", model: "VG271U M3" },
+    { connector: "HDMI-A-1", model: "VG240Y S" }
+  ])
+  assert.deepEqual(Model.parseMonitors(""), [])
+  assert.deepEqual(Model.parseMonitors("not json"), [])
+  assert.deepEqual(Model.parseMonitors("{}"), [])
+})
+
+test("cableForConnector names the cable from the connector", () => {
+  assert.equal(Model.cableForConnector("DP-1"), "DisplayPort")
+  assert.equal(Model.cableForConnector("HDMI-A-1"), "HDMI")
+  assert.equal(Model.cableForConnector("DVI-D-1"), "DVI")
+  assert.equal(Model.cableForConnector(""), "")
+  assert.equal(Model.cableForConnector("eDP-1"), "")
+})
+
+test("labelDisplayPorts maps monitor models to cable and model", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const labels = Model.labelDisplayPorts(card.ports, Model.parseMonitors(MONITORS))
+  assert.equal(labels["hdmi-output-0"], "HDMI · VG240Y S")
+  assert.equal(labels["hdmi-output-1"], "DisplayPort · VG271U M3")
+})
+
+test("labelDisplayPorts falls back to the port description", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const none = Model.labelDisplayPorts(card.ports, [])
+  assert.equal(none["hdmi-output-0"], "HDMI / DisplayPort")
+  const twin = Model.labelDisplayPorts(card.ports, [
+    { connector: "HDMI-A-1", model: "VG240Y S" },
+    { connector: "DP-1", model: "VG240Y S" }
+  ])
+  assert.equal(twin["hdmi-output-0"], "HDMI · VG240Y S")
+  assert.equal(twin["hdmi-output-1"], "HDMI / DisplayPort 2")
+})
