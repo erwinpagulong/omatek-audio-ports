@@ -74,6 +74,88 @@ function hasDisplayPorts(sink) {
   return false
 }
 
+// pactl -f json list cards -> the card whose name matches. A display-audio
+// card lists one port per physical connector, but PipeWire only creates a
+// sink for the active profile: this is where the other connector's output
+// lives. Card ports arrive as an object keyed by port name.
+function parseCard(jsonText, cardName) {
+  var text = String(jsonText || "").trim()
+  if (!text) return null
+
+  var cards
+  try {
+    cards = JSON.parse(text)
+  } catch (error) {
+    return null
+  }
+  if (!cards || !cards.length) return null
+
+  var wanted = String(cardName || "")
+  for (var i = 0; i < cards.length; i++) {
+    var card = cards[i]
+    if (!card || String(card.name || "") !== wanted) continue
+
+    var profiles = {}
+    var rawProfiles = card.profiles || {}
+    var profileNames = Object.keys(rawProfiles)
+    for (var p = 0; p < profileNames.length; p++) {
+      var rawProfile = rawProfiles[profileNames[p]] || {}
+      profiles[profileNames[p]] = {
+        description: String(rawProfile.description || ""),
+        available: rawProfile.available === true
+      }
+    }
+
+    var ports = []
+    var rawPorts = card.ports || {}
+    var portNames = Object.keys(rawPorts)
+    for (var k = 0; k < portNames.length; k++) {
+      var rawPort = rawPorts[portNames[k]] || {}
+      var props = rawPort.properties || {}
+      ports.push({
+        name: portNames[k],
+        description: String(rawPort.description || ""),
+        type: String(rawPort.type || ""),
+        priority: typeof rawPort.priority === "number" ? rawPort.priority : 0,
+        availability: String(rawPort.availability || ""),
+        productName: String(props["device.product.name"] || ""),
+        profiles: rawPort.profiles && rawPort.profiles.length ? rawPort.profiles.map(String) : []
+      })
+    }
+
+    return {
+      name: String(card.name || ""),
+      activeProfile: String(card.active_profile || ""),
+      ports: ports,
+      profiles: profiles
+    }
+  }
+  return null
+}
+
+// The stereo output profile of a connector; a surround variant is a last
+// resort. Keeping the active profile when the port offers it makes the sink's
+// own row a no-op instead of a pointless re-apply.
+function chooseProfile(port, card, activeProfile) {
+  if (!port || !card) return ""
+  var declared = port.profiles && port.profiles.length ? port.profiles : []
+  var candidates = []
+  for (var i = 0; i < declared.length; i++) {
+    var name = String(declared[i] || "")
+    if (!name) continue
+    var profile = card.profiles ? card.profiles[name] : null
+    if (profile && profile.available === true) candidates.push(name)
+  }
+
+  var active = String(activeProfile || "")
+  if (active !== "" && candidates.indexOf(active) !== -1) return active
+
+  for (var s = 0; s < candidates.length; s++) {
+    if (candidates[s].indexOf("surround") === -1) return candidates[s]
+  }
+  return candidates.length ? candidates[0] : ""
+}
+
 // pactl reports "not available" for a port with no cable in it. Everything
 // else (including a missing field) is switchable.
 function isAvailable(port) {
@@ -150,6 +232,8 @@ if (typeof module !== "undefined") {
     parseSink: parseSink,
     isDisplayPort: isDisplayPort,
     hasDisplayPorts: hasDisplayPorts,
+    parseCard: parseCard,
+    chooseProfile: chooseProfile,
     isAvailable: isAvailable,
     portLabel: portLabel,
     glyphFor: glyphFor,

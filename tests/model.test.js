@@ -104,3 +104,66 @@ test("hasDisplayPorts is true for HDMI and false for analog", () => {
   assert.equal(Model.hasDisplayPorts(hdmi), true)
   assert.equal(Model.hasDisplayPorts(analog), false)
 })
+
+const CARD = JSON.stringify([{
+  name: "alsa_card.pci-0000_28_00.1",
+  active_profile: "output:hdmi-stereo",
+  profiles: {
+    "output:hdmi-stereo": { description: "Digital Stereo (HDMI) Output", available: true },
+    "output:hdmi-stereo-extra1": { description: "Digital Stereo (HDMI 2) Output", available: true },
+    "output:hdmi-surround-extra1": { description: "Digital Surround 5.1 (HDMI 2) Output", available: true },
+    "output:hdmi-stereo-extra2": { description: "Digital Stereo (HDMI 3) Output", available: false }
+  },
+  ports: {
+    "hdmi-output-0": {
+      description: "HDMI / DisplayPort", type: "HDMI", priority: 5900, availability: "available",
+      properties: { "device.product.name": "VG240Y S" },
+      profiles: ["output:hdmi-stereo"]
+    },
+    "hdmi-output-1": {
+      description: "HDMI / DisplayPort 2", type: "HDMI", priority: 5800, availability: "available",
+      properties: { "device.product.name": "VG271U M3" },
+      profiles: ["output:hdmi-stereo-extra1", "output:hdmi-surround-extra1"]
+    },
+    "hdmi-output-2": {
+      description: "HDMI / DisplayPort 3", type: "HDMI", priority: 5700, availability: "not available",
+      properties: { "device.product.name": "" },
+      profiles: ["output:hdmi-stereo-extra2"]
+    }
+  }
+}])
+
+test("parseCard finds the card and keeps port metadata", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  assert.equal(card.activeProfile, "output:hdmi-stereo")
+  assert.equal(card.ports.length, 3)
+  assert.equal(card.ports[1].name, "hdmi-output-1")
+  assert.equal(card.ports[1].productName, "VG271U M3")
+  assert.equal(card.ports[1].availability, "available")
+  assert.equal(card.profiles["output:hdmi-stereo-extra1"].available, true)
+})
+
+test("parseCard returns null for malformed JSON or an unknown card", () => {
+  assert.equal(Model.parseCard("not json", "x"), null)
+  assert.equal(Model.parseCard("", "x"), null)
+  assert.equal(Model.parseCard(CARD, "alsa_card.other"), null)
+})
+
+test("chooseProfile prefers the stereo profile over surround", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const p1 = card.ports[1]
+  assert.equal(Model.chooseProfile(p1, card, ""), "output:hdmi-stereo-extra1")
+})
+
+test("chooseProfile falls back to surround, then to empty", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const surroundOnly = { profiles: ["output:hdmi-surround-extra1"] }
+  assert.equal(Model.chooseProfile(surroundOnly, card, ""), "output:hdmi-surround-extra1")
+  assert.equal(Model.chooseProfile({ profiles: ["output:gone"] }, card, ""), "")
+  assert.equal(Model.chooseProfile({ profiles: [] }, card, ""), "")
+})
+
+test("chooseProfile keeps the active profile when the port offers it", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  assert.equal(Model.chooseProfile(card.ports[0], card, "output:hdmi-stereo"), "output:hdmi-stereo")
+})
