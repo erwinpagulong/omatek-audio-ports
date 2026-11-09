@@ -280,3 +280,15 @@ test("findSinkByPort matches the sink on the card with that active port", () => 
   assert.equal(Model.findSinkByPort(SINKS_WITH_EXTRA1, "alsa_card.other", "hdmi-output-1"), "")
   assert.equal(Model.findSinkByPort("not json", "alsa_card.pci-0000_28_00.1", "hdmi-output-1"), "")
 })
+
+test("labelDisplayPorts falls back when two ports share a product name", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  card.ports[0].productName = "VG240Y S"
+  card.ports[1].productName = "VG240Y S"
+  const labels = Model.labelDisplayPorts(card.ports, [
+    { connector: "HDMI-A-1", model: "VG240Y S" },
+    { connector: "DP-1", model: "VG240Y S" }
+  ])
+  assert.equal(labels["hdmi-output-0"], "HDMI / DisplayPort")
+  assert.equal(labels["hdmi-output-1"], "HDMI / DisplayPort 2")
+})

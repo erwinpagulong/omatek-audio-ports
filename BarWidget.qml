@@ -164,6 +164,7 @@ BarWidget {
   }
 
   function finishDisplayApply(monitorJson) {
+    displayTimer.stop()
     if (!root.displayApplyPending || !root.parsedSink || !root.parsedCard) return
     root.displayApplyPending = false
     var monitors = Model.parseMonitors(monitorJson)
@@ -184,6 +185,7 @@ BarWidget {
     root.parsedSink = null
     root.parsedCard = null
     root.displayApplyPending = false
+    displayTimer.stop()
     root.activePort = ""
     root.ports = []
     root.ready = false
@@ -294,7 +296,12 @@ BarWidget {
           return
         }
         root.parsedCard = card
+        // Apply the card-based list before asking for labels: a missing or
+        // hung hyprctl must not leave a display sink unrendered.
+        root.applySink(root.parsedSink, Model.mergeDisplayPorts(root.parsedSink, card, {}))
+        root.activeProfile = card.activeProfile
         root.displayApplyPending = true
+        displayTimer.restart()
         monitorsProc.running = true
       }
     }
@@ -362,7 +369,19 @@ BarWidget {
     onTriggered: {
       root.pendingCard = ""
       root.pendingDefaultPort = ""
-      root.displayApplyPending = false
+    }
+  }
+
+  // A hyprctl that cannot start emits no exit at all, and one that hangs never
+  // finishes; either would leave the label refinement pending forever. The
+  // card-based list is already on screen, so expire the refinement and stop
+  // the helper.
+  Timer {
+    id: displayTimer
+    interval: 2500
+    onTriggered: {
+      root.finishDisplayApply("")
+      monitorsProc.running = false
     }
   }
 

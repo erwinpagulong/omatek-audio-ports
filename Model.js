@@ -206,13 +206,24 @@ function labelDisplayPorts(cardPorts, monitors) {
   var displays = monitors && monitors.length ? monitors : []
   var used = []
 
+  // Two identical monitors make the model ambiguous: matching them by order
+  // could hand a port the wrong cable. Count the product names first and only
+  // label a port when its model identifies exactly one connector.
+  var counts = {}
+  for (var c = 0; c < list.length; c++) {
+    if (!isDisplayPort(list[c])) continue
+    var key = normalizeModel(list[c].productName)
+    if (key === "") continue
+    counts[key] = (counts[key] || 0) + 1
+  }
+
   for (var i = 0; i < list.length; i++) {
     var port = list[i]
     if (!isDisplayPort(port)) continue
 
     var product = normalizeModel(port.productName)
     var match = null
-    if (product !== "") {
+    if (product !== "" && counts[product] === 1 && isAvailable(port)) {
       for (var m = 0; m < displays.length; m++) {
         if (used[m]) continue
         if (normalizeModel(displays[m].model) !== product) continue
