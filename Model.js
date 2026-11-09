@@ -47,6 +47,7 @@ function parseSink(jsonText, sinkName) {
 
     var props = sink.properties || {}
     return {
+      index: typeof sink.index === "number" ? sink.index : -1,
       name: String(sink.name || ""),
       description: String(sink.description || ""),
       cardName: String(props["device.name"] || ""),
@@ -318,6 +319,58 @@ function findSinkByPort(jsonText, cardName, portName) {
   return ""
 }
 
+// pactl -f json list sink-inputs -> the real application streams playing on
+// the sink about to be recreated. Filtering by sink keeps DSP routing intact
+// (EasyEffects' own output has no application.name, and apps playing through
+// a virtual sink are not touched).
+function appSinkInputs(jsonText, sinkIndex) {
+  var text = String(jsonText || "").trim()
+  if (!text) return []
+
+  var inputs
+  try {
+    inputs = JSON.parse(text)
+  } catch (error) {
+    return []
+  }
+  if (!inputs || !inputs.length) return []
+
+  var wanted = typeof sinkIndex === "number" ? sinkIndex : -1
+  if (wanted < 0) return []
+
+  var result = []
+  for (var i = 0; i < inputs.length; i++) {
+    var input = inputs[i]
+    if (!input || typeof input.index !== "number") continue
+    if (input.sink !== wanted) continue
+    var props = input.properties || {}
+    var app = String(props["application.name"] || "")
+    if (app === "" || app === "EasyEffects") continue
+    result.push(input.index)
+  }
+  return result
+}
+
+// pactl list short modules -> indices of null sinks this plugin left behind
+// if the shell died mid-switch. Unloading them moves any stranded stream back
+// to the default sink.
+function staleHoldModules(text) {
+  var lines = String(text || "").split("\n")
+  var result = []
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i]
+    if (line.indexOf("module-null-sink") === -1) continue
+    var fields = line.trim().split(/\s+/)
+    if (fields.length < 2) continue
+    if (fields[1] !== "module-null-sink") continue
+    if (!/(?:^|\s)sink_name=omatek_audio_hold(?:\s|$)/.test(line)) continue
+    var index = parseInt(fields[0], 10)
+    if (!isFinite(index) || index < 0) continue
+    result.push(index)
+  }
+  return result
+}
+
 // pactl reports "not available" for a port with no cable in it. Everything
 // else (including a missing field) is switchable.
 function isAvailable(port) {
@@ -401,6 +454,8 @@ if (typeof module !== "undefined") {
     labelDisplayPorts: labelDisplayPorts,
     mergeDisplayPorts: mergeDisplayPorts,
     findSinkByPort: findSinkByPort,
+    appSinkInputs: appSinkInputs,
+    staleHoldModules: staleHoldModules,
     isAvailable: isAvailable,
     portLabel: portLabel,
     glyphFor: glyphFor,

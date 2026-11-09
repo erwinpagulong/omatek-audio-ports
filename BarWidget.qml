@@ -43,7 +43,15 @@ BarWidget {
   // Set when a selection switches the card profile; the next sink read finds
   // the sink the switch created and makes it the default.
   property string pendingCard: ""
+  property string pendingProfile: ""
   property string pendingDefaultPort: ""
+  // App streams parked on a temporary null sink during a profile switch, so
+  // the player never sees its device disappear and pause.
+  property string holdModule: ""
+  property var heldInputs: []
+  property string movePurpose: ""
+  property string moveTarget: ""
+  property int moveIndex: 0
 
   property bool refreshPending: false
   property string sinkListJson: ""
@@ -193,6 +201,9 @@ BarWidget {
 
   function selectPort(portName) {
     if (root.sinkName === "" || !portName) return
+    // One switch at a time: a second click while streams are parked would
+    // orphan the hold sink.
+    if (root.pendingDefaultPort !== "" || root.movePurpose !== "") return
     var list = root.ports || []
     var port = null
     for (var i = 0; i < list.length; i++) {
@@ -202,16 +213,90 @@ BarWidget {
     if (profile !== "" && profile !== root.activeProfile && root.cardName !== "") {
       // A port on another profile only exists after the card switches to it;
       // the resulting sink is made default on the next read.
-      root.pendingCard = root.cardName
-      root.pendingDefaultPort = String(portName)
-      pendingTimer.restart()
-      Quickshell.execDetached(["pactl", "set-card-profile", root.cardName, profile])
+      root.beginProfileSwitch(profile, String(portName))
     } else {
       Quickshell.execDetached(["pactl", "set-sink-port", root.sinkName, String(portName)])
     }
     // Best effort persistence, inert on machines that do not read it. A
     // heredoc-free printf keeps the port name exactly as pactl knows it.
     Quickshell.execDetached(["sh", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", String(portName), root.preferenceFile])
+    debounce.restart()
+  }
+
+  // A display connector is a different card profile, so switching recreates
+  // the sink. Players such as Chrome and Spotify pause when their device
+  // disappears, so app streams on this sink are parked on a null sink first
+  // and moved to the new sink once it exists. Each move is its own process and
+  // the chain waits for it to exit, so no timing guess is needed.
+  function beginProfileSwitch(profile, portName) {
+    root.pendingCard = root.cardName
+    root.pendingProfile = String(profile)
+    root.pendingDefaultPort = String(portName)
+    pendingTimer.restart()
+    root.heldInputs = []
+    root.holdModule = ""
+    listInputsProc.running = true
+  }
+
+  function beginHoldMoves() {
+    root.movePurpose = "hold"
+    root.moveTarget = "omatek_audio_hold"
+    root.moveIndex = 0
+    root.runNextMove()
+  }
+
+  function runNextMove() {
+    if (root.moveIndex >= root.heldInputs.length) {
+      root.afterMoves()
+      return
+    }
+    moveProc.command = ["pactl", "move-sink-input",
+      String(root.heldInputs[root.moveIndex]), root.moveTarget]
+    moveProc.running = true
+  }
+
+  function afterMoves() {
+    if (root.movePurpose === "hold") {
+      root.movePurpose = ""
+      root.startProfileSwitch()
+      return
+    }
+    root.finishRelease()
+  }
+
+  function startProfileSwitch() {
+    if (root.pendingProfile === "" || root.pendingCard === "") return
+    switchProc.command = ["pactl", "set-card-profile", root.pendingCard, root.pendingProfile]
+    switchProc.running = true
+  }
+
+  function releaseHold(target) {
+    if (root.heldInputs.length === 0 || String(target || "") === "") {
+      root.finishRelease()
+      return
+    }
+    root.movePurpose = "release"
+    root.moveTarget = String(target)
+    root.moveIndex = 0
+    root.runNextMove()
+  }
+
+  function finishRelease() {
+    if (root.holdModule !== "") {
+      Quickshell.execDetached(["pactl", "unload-module", root.holdModule])
+    }
+    root.heldInputs = []
+    root.holdModule = ""
+    root.pendingProfile = ""
+    root.movePurpose = ""
+    root.moveTarget = ""
+  }
+
+  function abortHold() {
+    root.releaseHold(root.sinkName)
+    root.pendingCard = ""
+    root.pendingDefaultPort = ""
+    pendingTimer.stop()
     debounce.restart()
   }
 
@@ -263,6 +348,7 @@ BarWidget {
           if (target !== "") {
             if (target !== root.defaultSink) Quickshell.execDetached(["pactl", "set-default-sink", target])
             root.defaultSink = target
+            root.releaseHold(target)
             root.pendingCard = ""
             root.pendingDefaultPort = ""
             pendingTimer.stop()
@@ -339,6 +425,81 @@ BarWidget {
     }
   }
 
+  // The app streams on the sink being switched. They are parked on a null
+  // sink so a player (Chrome, Spotify) does not see its device disappear.
+  Process {
+    id: listInputsProc
+    command: ["pactl", "-f", "json", "list", "sink-inputs"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var ids = Model.appSinkInputs(String(text || ""), root.parsedSink ? root.parsedSink.index : -1)
+        if (!ids.length) { root.startProfileSwitch(); return }
+        root.heldInputs = ids
+        loadHoldProc.running = true
+      }
+    }
+  }
+
+  Process {
+    id: loadHoldProc
+    command: ["pactl", "load-module", "module-null-sink",
+      "sink_name=omatek_audio_hold",
+      "sink_properties=device.description=OmatekAudioHold"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var module = String(text || "").trim()
+        if (!/^[0-9]+$/.test(module)) {
+          // No hold sink available: switch anyway rather than staying silent.
+          root.heldInputs = []
+          root.startProfileSwitch()
+          return
+        }
+        root.holdModule = module
+        root.beginHoldMoves()
+      }
+    }
+    onExited: function(code) {
+      if (root.holdModule === "" && root.heldInputs.length > 0) {
+        root.heldInputs = []
+        root.startProfileSwitch()
+      }
+    }
+  }
+
+  Process {
+    id: moveProc
+    onExited: function(code) {
+      // A failed move still advances; the switch must not wedge on it.
+      root.moveIndex++
+      root.runNextMove()
+    }
+  }
+
+  Process {
+    id: switchProc
+    onExited: function(code) {
+      if (code !== 0) root.abortHold()
+    }
+  }
+
+  // A previous shell run may have died between parking streams and releasing
+  // them. Unloading its hold sink moves them back to the default output.
+  Process {
+    id: cleanupHoldProc
+    command: ["pactl", "list", "short", "modules"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var stale = Model.staleHoldModules(String(text || ""))
+        for (var i = 0; i < stale.length; i++) {
+          Quickshell.execDetached(["pactl", "unload-module", String(stale[i])])
+        }
+      }
+    }
+  }
+
   // One subscription for every sink/server/card change, debounced so a burst
   // of events results in one refresh. PulseAudio restarting kills the
   // process; the resubscribe timer brings it back and the refresh recovers
@@ -362,14 +523,11 @@ BarWidget {
   }
 
   // A profile that refuses to switch, or a sink that never appears, must not
-  // leave the widget waiting for a default forever.
+  // leave app streams parked on the hold sink.
   Timer {
     id: pendingTimer
     interval: 5000
-    onTriggered: {
-      root.pendingCard = ""
-      root.pendingDefaultPort = ""
-    }
+    onTriggered: root.abortHold()
   }
 
   // A hyprctl that cannot start emits no exit at all, and one that hangs never
@@ -416,5 +574,8 @@ BarWidget {
     }
   }
 
-  Component.onCompleted: root.refresh()
+  Component.onCompleted: {
+    cleanupHoldProc.running = true
+    root.refresh()
+  }
 }

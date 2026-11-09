@@ -292,3 +292,37 @@ test("labelDisplayPorts falls back when two ports share a product name", () => {
   assert.equal(labels["hdmi-output-0"], "HDMI / DisplayPort")
   assert.equal(labels["hdmi-output-1"], "HDMI / DisplayPort 2")
 })
+
+test("parseSink keeps the sink index for stream filtering", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  assert.equal(sink.index, 6202)
+})
+
+const SINK_INPUTS = JSON.stringify([
+  { index: 8058, sink: 8350, corked: true, properties: { "application.name": "Spotify" } },
+  { index: 8514, sink: 8350, corked: false, properties: { "application.name": "Google Chrome" } },
+  { index: 9000, sink: 9999, properties: { "application.name": "Other app" } },
+  { index: 9001, sink: 8350, properties: { "application.name": "EasyEffects" } },
+  { index: 9002, sink: 8350, properties: { "media.name": "filter chain" } }
+])
+
+test("appSinkInputs returns app streams on the sink being switched", () => {
+  assert.deepEqual(Model.appSinkInputs(SINK_INPUTS, 8350), [8058, 8514])
+  assert.deepEqual(Model.appSinkInputs(SINK_INPUTS, 9999), [9000])
+  assert.deepEqual(Model.appSinkInputs(SINK_INPUTS, -1), [])
+  assert.deepEqual(Model.appSinkInputs("not json", 8350), [])
+  assert.deepEqual(Model.appSinkInputs("", 8350), [])
+})
+
+const MODULES = [
+  "536870912\tmodule-null-sink\tsink_name=omatek_audio_hold sink_properties=device.description=OmatekAudioHold",
+  "536870913\tmodule-null-sink\tsink_name=other",
+  "536870914\tmodule-loopback\t",
+  "536870915\tmodule-null-sink\tsink_name=omatek_audio_hold_extra"
+].join("\n")
+
+test("staleHoldModules finds only this plugin's hold sink", () => {
+  assert.deepEqual(Model.staleHoldModules(MODULES), [536870912])
+  assert.deepEqual(Model.staleHoldModules(""), [])
+  assert.deepEqual(Model.staleHoldModules("1\tmodule-null-sink\tsink_name=other"), [])
+})
