@@ -75,3 +75,32 @@ test("activeIndex and clampIndex stay inside the list", () => {
   assert.equal(Model.clampIndex(-3, 2), 0)
   assert.equal(Model.clampIndex(0, 0), -1)
 })
+
+const HDMI_SINK = JSON.stringify([{
+  index: 6202,
+  name: "alsa_output.pci-0000_28_00.1.hdmi-stereo",
+  description: "Navi 10 HDMI Audio Digital Stereo (HDMI) [VG271U M3]",
+  properties: {
+    "device.name": "alsa_card.pci-0000_28_00.1",
+    "device.description": "Navi 10 HDMI Audio"
+  },
+  active_port: "hdmi-output-0",
+  ports: [
+    { name: "hdmi-output-0", description: "HDMI / DisplayPort", type: "HDMI", priority: 5900, availability: "available" }
+  ]
+}])
+
+test("parseSink keeps the card name, device description and port type", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  assert.equal(sink.cardName, "alsa_card.pci-0000_28_00.1")
+  assert.equal(sink.deviceDescription, "Navi 10 HDMI Audio")
+  assert.equal(sink.ports[0].type, "HDMI")
+  assert.equal(sink.ports[0].availability, "available")
+})
+
+test("hasDisplayPorts is true for HDMI and false for analog", () => {
+  const hdmi = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  const analog = Model.parseSink(SINK, "alsa_output.pci-0000_2a_00.4.analog-stereo")
+  assert.equal(Model.hasDisplayPorts(hdmi), true)
+  assert.equal(Model.hasDisplayPorts(analog), false)
+})

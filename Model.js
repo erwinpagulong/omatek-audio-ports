@@ -11,6 +11,9 @@ function normalizePort(port) {
   return {
     name: String(value.name || ""),
     description: String(value.description || ""),
+    type: String(value.type || ""),
+    profile: String(value.profile || ""),
+    label: String(value.label || ""),
     priority: typeof value.priority === "number" ? value.priority : 0,
     availability: String(value.availability || "")
   }
@@ -42,14 +45,33 @@ function parseSink(jsonText, sinkName) {
       ports.push(normalizePort(rawPorts[p]))
     }
 
+    var props = sink.properties || {}
     return {
       name: String(sink.name || ""),
       description: String(sink.description || ""),
+      cardName: String(props["device.name"] || ""),
+      deviceDescription: String(props["device.description"] || ""),
       activePort: String(sink.active_port || ""),
       ports: ports
     }
   }
   return null
+}
+
+// A port on the GPU's HDMI audio card. The audio transport is HDMI-protocol
+// even for a DisplayPort cable, so this is what identifies a display output.
+function isDisplayPort(port) {
+  if (!port) return false
+  return String(port.type || "").toLowerCase() === "hdmi"
+}
+
+function hasDisplayPorts(sink) {
+  if (!sink) return false
+  var list = sink.ports && sink.ports.length ? sink.ports : []
+  for (var i = 0; i < list.length; i++) {
+    if (isDisplayPort(list[i])) return true
+  }
+  return false
 }
 
 // pactl reports "not available" for a port with no cable in it. Everything
@@ -126,6 +148,8 @@ function clampIndex(index, count) {
 if (typeof module !== "undefined") {
   module.exports = {
     parseSink: parseSink,
+    isDisplayPort: isDisplayPort,
+    hasDisplayPorts: hasDisplayPorts,
     isAvailable: isAvailable,
     portLabel: portLabel,
     glyphFor: glyphFor,
