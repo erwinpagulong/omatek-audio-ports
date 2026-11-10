@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.erwinpagulong.omatek-audio-ports",
   "name": "Tek Audio Ports",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Erwin Pagulong",
   "license": "MIT",
   "description": "Switch the active port of your output device — rear line-out, front headphones, HDMI — straight from the bar.",

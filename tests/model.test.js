@@ -75,3 +75,254 @@ test("activeIndex and clampIndex stay inside the list", () => {
   assert.equal(Model.clampIndex(-3, 2), 0)
   assert.equal(Model.clampIndex(0, 0), -1)
 })
+
+const HDMI_SINK = JSON.stringify([{
+  index: 6202,
+  name: "alsa_output.pci-0000_28_00.1.hdmi-stereo",
+  description: "Navi 10 HDMI Audio Digital Stereo (HDMI) [VG271U M3]",
+  properties: {
+    "device.name": "alsa_card.pci-0000_28_00.1",
+    "device.description": "Navi 10 HDMI Audio"
+  },
+  active_port: "hdmi-output-0",
+  ports: [
+    { name: "hdmi-output-0", description: "HDMI / DisplayPort", type: "HDMI", priority: 5900, availability: "available" }
+  ]
+}])
+
+test("parseSink keeps the card name, device description and port type", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  assert.equal(sink.cardName, "alsa_card.pci-0000_28_00.1")
+  assert.equal(sink.deviceDescription, "Navi 10 HDMI Audio")
+  assert.equal(sink.ports[0].type, "HDMI")
+  assert.equal(sink.ports[0].availability, "available")
+})
+
+test("hasDisplayPorts is true for HDMI and false for analog", () => {
+  const hdmi = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  const analog = Model.parseSink(SINK, "alsa_output.pci-0000_2a_00.4.analog-stereo")
+  assert.equal(Model.hasDisplayPorts(hdmi), true)
+  assert.equal(Model.hasDisplayPorts(analog), false)
+})
+
+const CARD = JSON.stringify([{
+  name: "alsa_card.pci-0000_28_00.1",
+  active_profile: "output:hdmi-stereo",
+  profiles: {
+    "output:hdmi-stereo": { description: "Digital Stereo (HDMI) Output", available: true },
+    "output:hdmi-stereo-extra1": { description: "Digital Stereo (HDMI 2) Output", available: true },
+    "output:hdmi-surround-extra1": { description: "Digital Surround 5.1 (HDMI 2) Output", available: true },
+    "output:hdmi-stereo-extra2": { description: "Digital Stereo (HDMI 3) Output", available: false }
+  },
+  ports: {
+    "hdmi-output-0": {
+      description: "HDMI / DisplayPort", type: "HDMI", priority: 5900, availability: "available",
+      properties: { "device.product.name": "VG240Y S" },
+      profiles: ["output:hdmi-stereo"]
+    },
+    "hdmi-output-1": {
+      description: "HDMI / DisplayPort 2", type: "HDMI", priority: 5800, availability: "available",
+      properties: { "device.product.name": "VG271U M3" },
+      profiles: ["output:hdmi-stereo-extra1", "output:hdmi-surround-extra1"]
+    },
+    "hdmi-output-2": {
+      description: "HDMI / DisplayPort 3", type: "HDMI", priority: 5700, availability: "not available",
+      properties: { "device.product.name": "" },
+      profiles: ["output:hdmi-stereo-extra2"]
+    }
+  }
+}])
+
+test("parseCard finds the card and keeps port metadata", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  assert.equal(card.activeProfile, "output:hdmi-stereo")
+  assert.equal(card.ports.length, 3)
+  assert.equal(card.ports[1].name, "hdmi-output-1")
+  assert.equal(card.ports[1].productName, "VG271U M3")
+  assert.equal(card.ports[1].availability, "available")
+  assert.equal(card.profiles["output:hdmi-stereo-extra1"].available, true)
+})
+
+test("parseCard returns null for malformed JSON or an unknown card", () => {
+  assert.equal(Model.parseCard("not json", "x"), null)
+  assert.equal(Model.parseCard("", "x"), null)
+  assert.equal(Model.parseCard(CARD, "alsa_card.other"), null)
+})
+
+test("chooseProfile prefers the stereo profile over surround", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const p1 = card.ports[1]
+  assert.equal(Model.chooseProfile(p1, card, ""), "output:hdmi-stereo-extra1")
+})
+
+test("chooseProfile falls back to surround, then to empty", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const surroundOnly = { profiles: ["output:hdmi-surround-extra1"] }
+  assert.equal(Model.chooseProfile(surroundOnly, card, ""), "output:hdmi-surround-extra1")
+  assert.equal(Model.chooseProfile({ profiles: ["output:gone"] }, card, ""), "")
+  assert.equal(Model.chooseProfile({ profiles: [] }, card, ""), "")
+})
+
+test("chooseProfile keeps the active profile when the port offers it", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  assert.equal(Model.chooseProfile(card.ports[0], card, "output:hdmi-stereo"), "output:hdmi-stereo")
+})
+
+const MONITORS = JSON.stringify([
+  { id: 0, name: "DP-1", model: "VG271U M3" },
+  { id: 1, name: "HDMI-A-1", model: "VG240Y S" }
+])
+
+test("parseMonitors keeps connector and model, tolerating junk", () => {
+  assert.deepEqual(Model.parseMonitors(MONITORS), [
+    { connector: "DP-1", model: "VG271U M3" },
+    { connector: "HDMI-A-1", model: "VG240Y S" }
+  ])
+  assert.deepEqual(Model.parseMonitors(""), [])
+  assert.deepEqual(Model.parseMonitors("not json"), [])
+  assert.deepEqual(Model.parseMonitors("{}"), [])
+})
+
+test("cableForConnector names the cable from the connector", () => {
+  assert.equal(Model.cableForConnector("DP-1"), "DisplayPort")
+  assert.equal(Model.cableForConnector("HDMI-A-1"), "HDMI")
+  assert.equal(Model.cableForConnector("DVI-D-1"), "DVI")
+  assert.equal(Model.cableForConnector(""), "")
+  assert.equal(Model.cableForConnector("eDP-1"), "")
+})
+
+test("labelDisplayPorts maps monitor models to cable and model", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const labels = Model.labelDisplayPorts(card.ports, Model.parseMonitors(MONITORS))
+  assert.equal(labels["hdmi-output-0"], "HDMI · VG240Y S")
+  assert.equal(labels["hdmi-output-1"], "DisplayPort · VG271U M3")
+})
+
+test("labelDisplayPorts falls back to the port description", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const none = Model.labelDisplayPorts(card.ports, [])
+  assert.equal(none["hdmi-output-0"], "HDMI / DisplayPort")
+  const twin = Model.labelDisplayPorts(card.ports, [
+    { connector: "HDMI-A-1", model: "VG240Y S" },
+    { connector: "DP-1", model: "VG240Y S" }
+  ])
+  assert.equal(twin["hdmi-output-0"], "HDMI · VG240Y S")
+  assert.equal(twin["hdmi-output-1"], "HDMI / DisplayPort 2")
+})
+
+const SINKS_WITH_EXTRA1 = JSON.stringify([
+  {
+    index: 6202,
+    name: "alsa_output.pci-0000_28_00.1.hdmi-stereo",
+    description: "Navi 10 HDMI Audio Digital Stereo (HDMI)",
+    properties: { "device.name": "alsa_card.pci-0000_28_00.1" },
+    active_port: "hdmi-output-0",
+    ports: [{ name: "hdmi-output-0", description: "HDMI / DisplayPort", type: "HDMI", priority: 5900, availability: "available" }]
+  },
+  {
+    index: 6300,
+    name: "alsa_output.pci-0000_28_00.1.hdmi-stereo-extra1",
+    description: "Navi 10 HDMI Audio Digital Stereo (HDMI 2)",
+    properties: { "device.name": "alsa_card.pci-0000_28_00.1" },
+    active_port: "hdmi-output-1",
+    ports: [{ name: "hdmi-output-1", description: "HDMI / DisplayPort 2", type: "HDMI", priority: 5800, availability: "available" }]
+  }
+])
+
+test("mergeDisplayPorts appends available card ports with profiles and labels", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const labels = { "hdmi-output-0": "HDMI · VG240Y S", "hdmi-output-1": "DisplayPort · VG271U M3" }
+  const merged = Model.mergeDisplayPorts(sink, card, labels)
+  assert.deepEqual(merged.map(p => p.name), ["hdmi-output-0", "hdmi-output-1"])
+  assert.equal(merged[0].profile, "output:hdmi-stereo")
+  assert.equal(merged[1].profile, "output:hdmi-stereo-extra1")
+  assert.equal(Model.portLabel(merged[1]), "DisplayPort · VG271U M3")
+  assert.equal(Model.isAvailable(merged[1]), true)
+  assert.equal(Model.nextPort(merged, "hdmi-output-0"), "hdmi-output-1")
+})
+
+test("mergeDisplayPorts returns the analog ports untouched", () => {
+  const sink = Model.parseSink(SINK, "alsa_output.pci-0000_2a_00.4.analog-stereo")
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  const merged = Model.mergeDisplayPorts(sink, card, {})
+  assert.deepEqual(merged.map(p => p.name), ["analog-output-lineout", "analog-output-headphones"])
+  assert.equal(merged[0].profile, "")
+})
+
+test("mergeDisplayPorts drops unavailable ports but keeps the active one", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  card.ports[1].availability = "not available"
+  const merged = Model.mergeDisplayPorts(sink, card, {})
+  assert.deepEqual(merged.map(p => p.name), ["hdmi-output-0"])
+
+  const activeOnUnavailable = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  activeOnUnavailable.activePort = "hdmi-output-2"
+  const withActive = Model.mergeDisplayPorts(activeOnUnavailable, card, {})
+  assert.deepEqual(withActive.map(p => p.name), ["hdmi-output-0", "hdmi-output-2"])
+})
+
+test("mergeDisplayPorts is a no-op without a matching card", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  assert.deepEqual(Model.mergeDisplayPorts(sink, null, {}), sink.ports)
+  const other = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  other.name = "alsa_card.pci-0000_99_00.1"
+  assert.deepEqual(Model.mergeDisplayPorts(sink, other, {}), sink.ports)
+})
+
+test("findSinkByPort matches the sink on the card with that active port", () => {
+  assert.equal(
+    Model.findSinkByPort(SINKS_WITH_EXTRA1, "alsa_card.pci-0000_28_00.1", "hdmi-output-1"),
+    "alsa_output.pci-0000_28_00.1.hdmi-stereo-extra1"
+  )
+  assert.equal(Model.findSinkByPort(SINKS_WITH_EXTRA1, "alsa_card.pci-0000_28_00.1", "hdmi-output-3"), "")
+  assert.equal(Model.findSinkByPort(SINKS_WITH_EXTRA1, "alsa_card.other", "hdmi-output-1"), "")
+  assert.equal(Model.findSinkByPort("not json", "alsa_card.pci-0000_28_00.1", "hdmi-output-1"), "")
+})
+
+test("labelDisplayPorts falls back when two ports share a product name", () => {
+  const card = Model.parseCard(CARD, "alsa_card.pci-0000_28_00.1")
+  card.ports[0].productName = "VG240Y S"
+  card.ports[1].productName = "VG240Y S"
+  const labels = Model.labelDisplayPorts(card.ports, [
+    { connector: "HDMI-A-1", model: "VG240Y S" },
+    { connector: "DP-1", model: "VG240Y S" }
+  ])
+  assert.equal(labels["hdmi-output-0"], "HDMI / DisplayPort")
+  assert.equal(labels["hdmi-output-1"], "HDMI / DisplayPort 2")
+})
+
+test("parseSink keeps the sink index for stream filtering", () => {
+  const sink = Model.parseSink(HDMI_SINK, "alsa_output.pci-0000_28_00.1.hdmi-stereo")
+  assert.equal(sink.index, 6202)
+})
+
+const SINK_INPUTS = JSON.stringify([
+  { index: 8058, sink: 8350, corked: true, properties: { "application.name": "Spotify" } },
+  { index: 8514, sink: 8350, corked: false, properties: { "application.name": "Google Chrome" } },
+  { index: 9000, sink: 9999, properties: { "application.name": "Other app" } },
+  { index: 9001, sink: 8350, properties: { "application.name": "EasyEffects" } },
+  { index: 9002, sink: 8350, properties: { "media.name": "filter chain" } }
+])
+
+test("appSinkInputs returns app streams on the sink being switched", () => {
+  assert.deepEqual(Model.appSinkInputs(SINK_INPUTS, 8350), [8058, 8514])
+  assert.deepEqual(Model.appSinkInputs(SINK_INPUTS, 9999), [9000])
+  assert.deepEqual(Model.appSinkInputs(SINK_INPUTS, -1), [])
+  assert.deepEqual(Model.appSinkInputs("not json", 8350), [])
+  assert.deepEqual(Model.appSinkInputs("", 8350), [])
+})
+
+const MODULES = [
+  "536870912\tmodule-null-sink\tsink_name=omatek_audio_hold sink_properties=device.description=OmatekAudioHold",
+  "536870913\tmodule-null-sink\tsink_name=other",
+  "536870914\tmodule-loopback\t",
+  "536870915\tmodule-null-sink\tsink_name=omatek_audio_hold_extra"
+].join("\n")
+
+test("staleHoldModules finds only this plugin's hold sink", () => {
+  assert.deepEqual(Model.staleHoldModules(MODULES), [536870912])
+  assert.deepEqual(Model.staleHoldModules(""), [])
+  assert.deepEqual(Model.staleHoldModules("1\tmodule-null-sink\tsink_name=other"), [])
+})

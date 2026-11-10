@@ -25,6 +25,12 @@ omarchy plugin add https://github.com/erwinpagulong/omatek-audio-ports.git --ena
   to it and closes the panel.
 - The glyph follows the active port: headphones, an HDMI display, or speakers.
 
+On a GPU audio card, each physical display connector is a separate card
+profile, so the panel lists every live display output by cable and monitor —
+for example `DisplayPort · VG271U M3` and `HDMI · VG240Y S`. Selecting the
+other cable switches the card profile, keeps playing apps running, and makes
+the new sink the default.
+
 Ports reported as `not available` (no cable in the jack) are dimmed, labelled
 `not plugged in`, and cannot be selected.
 
@@ -33,7 +39,14 @@ Ports reported as `not available` (no cable in the jack) are dimmed, labelled
 | | |
 |---|---|
 | `pactl get-default-sink`, `pactl -f json list sinks` | read the default sink and its ports |
-| `pactl set-sink-port <sink> <port>` | the only write; switches the active port |
+| `pactl -f json list cards` | read the display-audio card's connectors (display sinks only) |
+| `hyprctl monitors -j` | read connector and model for cable labels (display sinks only) |
+| `pactl set-sink-port <sink> <port>` | switch a port on the current profile |
+| `pactl set-card-profile <card> <profile>` | switch to the other display connector's profile (display sinks only) |
+| `pactl -f json list sink-inputs` | read the app streams on the sink being switched (display switches only) |
+| `pactl load-module module-null-sink`, `pactl move-sink-input`, `pactl unload-module` | temporarily park those streams while the sink is recreated, so players do not pause (display switches only) |
+| `pactl list short modules` | clean up a hold sink left behind by a shell crash at startup |
+| `pactl set-default-sink <sink>` | make the newly created display sink the default, once per switch |
 | `pactl subscribe` | one long-running process, debounced 120 ms, restarted 2 s after it exits |
 | `omarchy-audio-output-sink` | read-only fallback when the default sink is a virtual/DSP sink with no ports |
 | `~/.config/omarchy/audio-output-port` | best-effort one-line record of the chosen port |
@@ -45,7 +58,9 @@ process, and nothing under `/usr/share/omarchy/` is modified.
 
 Any PipeWire or PulseAudio sink that exposes more than one entry in `ports[]`.
 That covers analog jacks, HDMI outputs, laptop speakers vs. headphone jacks and
-most USB audio interfaces. The choice is also stored by WirePlumber in
+most USB audio interfaces. On a GPU, the live connectors come from the card
+itself, so a display sink with a single port still offers the other monitor's
+output. The choice is also stored by WirePlumber in
 `~/.local/state/wireplumber/default-routes`, so it normally survives reboot on
 its own; the preference file above lets login/resume helpers honour it too.
 
@@ -53,6 +68,17 @@ its own; the preference file above lets login/resume helpers honour it too.
 
 - **No "both jacks at once" mode.** A port is a single PipeWire route; playing
   rear and front simultaneously is a mixer trick this plugin does not do.
+- **Switching display cables recreates the audio device.** App streams playing
+  on that sink are parked on a temporary null sink for the moment it takes to
+  recreate the device, so Chrome, Spotify and similar players keep playing
+  instead of pausing until you press play. You still hear a short silence, and
+  a stream started during that instant lands on the new default.
+- Only live display outputs are listed; an unplugged monitor's row disappears
+  until it is connected again.
+- Display switching uses the stereo output profile. Surround (5.1 / 7.1) and
+  `pro-audio` profiles are not offered.
+- Cable labels come from `hyprctl`. Without it (or with two identical monitor
+  models) the rows fall back to the card's own `HDMI / DisplayPort N` names.
 - A virtual DSP default (for example `easyeffects_sink`) with no ports falls
   back once to the physical output that `omarchy-audio-output-sink` resolves.
   If that also has no ports, the glyph still shows the device class and the
